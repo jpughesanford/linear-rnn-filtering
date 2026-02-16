@@ -94,7 +94,7 @@ All accept an optional `x0` argument for initial hidden state.
 ## Development
 
 ```bash
-git clone <repo-url> #TODO
+git clone https://github.com/jpughesanford/linear-rnn-filtering
 cd linear-rnn-filtering
 pip install -e ".[dev]"
 
