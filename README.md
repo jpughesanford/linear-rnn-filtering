@@ -85,9 +85,9 @@ Constraint types: `"unconstrained"`, `"stable"` (Cayley), `"stochastic"` (softma
 
 All models support three training objectives:
 
-- **`train_on_emissions`** &mdash; Minimise mean surprisal (negative log-likelihood of next token).
-- **`train_on_posterior`** &mdash; Minimise KL divergence to the exact HMM next-token posterior.
-- **`train_on_hilbert`** &mdash; Minimise the Hilbert projective metric to the exact posterior.
+- **`LossType.EMISSIONS`** &mdash; Minimise mean surprisal (negative log-likelihood of next token).
+- **`LossType.KL`** &mdash; Minimise KL divergence to the exact HMM next-token posterior.
+- **`LossType.HILBERT`** &mdash; Minimise the Hilbert projective metric to the exact HMM next-token posterior.
 
 All accept an optional `x0` argument for initial hidden state.
 
