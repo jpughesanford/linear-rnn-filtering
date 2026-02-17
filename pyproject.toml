@@ -34,6 +34,10 @@ dev = [
     "pytest-cov>=4",
     "ruff>=0.4",
 ]
+docs = [
+    "sphinx>=7",
+    "sphinx-autodoc-typehints"
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/linear_rnn_filtering"]
