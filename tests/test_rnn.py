@@ -4,7 +4,9 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from linear_rnn_filtering import ExactRNN, HMMFactory, ModelA, ModelB, LossType
+from linear_rnn_filtering.rnn import AbstractRNN, ExactRNN, ModelA, ModelB
+from linear_rnn_filtering.hmm import HMMFactory
+from linear_rnn_filtering.types import LossType
 
 
 @pytest.fixture

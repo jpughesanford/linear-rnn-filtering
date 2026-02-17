@@ -1,23 +1,46 @@
-# linear-rnn-filtering
+# README
 
-Linear RNN approximations to discrete Hidden Markov Model forward filtering.
+This repository provides the base code that was used in [submitted manuscript] to
+investigate the ability of Recurrent Neural Networks (RNNs) with linear latent dynamics to
+perform next token prediction on sequences sampled from Hidden Markov Models (HMMs).
 
-This package provides:
+This package implements the following classes:
 
 - **`DiscreteHMM`** &mdash; Simulate a discrete HMM, sample hidden/emission trajectories in batch, and compute the exact Bayesian next-token posterior via forward filtering.
-- **`ExactRNN`** &mdash; The exact nonlinear forward-filter recurrence implemented as a JAX-compatible RNN.
-- **`ModelA`** &mdash; A stable linear RNN (`x_t = A x_{t-1} + B[:, y_t]`) with Cayley-parameterised dynamics and column-stochastic readout. Supports `initialize_Astar` for Jacobian-linearised initialization.
-- **`ModelB`** &mdash; A stable linear RNN with an affine softmax readout (`p_t = softmax(C x_t + d)`).
+- **`AbstractRNN`** &mdash; Abstract base class to be subclassed when implementing arbitrary, potentially nonlinear, single-layer RNNs. 
+- **`ExactRNN`** &mdash; The exact nonlinear forward-filter implemented as an RNN.
+- **`ModelA`** &mdash; A stable linear RNN, with a forward-filter informed nonlinear readout. Supports creating A* models (i.e., Jacobian-linearized initialization) using`initialize_Astar`, see manuscript for more details on such models.
+- **`ModelB`** &mdash; A stable linear RNN, with an affine softmax readout (`output = softmax(A*latent_state + b)`).
 
 ## Installation
 
 ```bash
+# clone the repository
+git clone https://github.com/jpughesanford/linear-rnn-filtering
+cd linear-rnn-filtering
+
+# make a local environment, if one does not exist already
+python -m venv .venv
+source .venv/bin/activate
+
+# install the repository
+pip install -e .
+
+# (Optional) To run tests and lint:
 pip install -e ".[dev]"
+pytest
+ruff check src/ tests/
+
+# (Optional) To build in-browser documentation: #TODO implement 
+pip install -e ".[docs]"
+cd docs && make html 
+open build/html/index.html      
 ```
 
 ## Quick start
 
 ```python
+import numpy as np
 from linear_rnn_filtering import HMMFactory, ModelA, ExactRNN
 
 # Create a two-state "dishonest casino" HMM
@@ -41,7 +64,6 @@ rnn_lin = ModelA(hmm.latent_dim, hmm.emission_dim)
 rnn_lin.initialize_Astar(hmm)
 
 # Use initial condition for exact match (no burn-in needed)
-import numpy as np
 x0 = np.log(hmm.latent_stationary_density)
 exact = ExactRNN(hmm.latent_dim, hmm.emission_dim)
 exact.initialize_weights(hmm)
@@ -81,7 +103,7 @@ class MyModel(AbstractRNN):
 
 Constraint types: `"unconstrained"`, `"stable"` (Cayley), `"stochastic"` (softmax axis=0), `"nonneg"` (squared).
 
-## Training modes
+## Loss functions supported 
 
 All models support three training objectives:
 
@@ -90,20 +112,6 @@ All models support three training objectives:
 - **`LossType.HILBERT`** &mdash; Minimise the Hilbert projective metric to the exact HMM next-token posterior.
 
 All accept an optional `x0` argument for initial hidden state.
-
-## Development
-
-```bash
-git clone https://github.com/jpughesanford/linear-rnn-filtering
-cd linear-rnn-filtering
-pip install -e ".[dev]"
-
-# Run tests
-pytest
-
-# Lint
-ruff check src/ tests/
-```
 
 ## License
 

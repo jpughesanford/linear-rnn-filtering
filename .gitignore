@@ -13,3 +13,4 @@ htmlcov/
 *.mat
 .idea/
 .DS_Store
+/docs/source/_autosummary/

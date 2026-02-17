@@ -3,17 +3,9 @@
 Each model takes a sequence of discrete emissions and produces a
 predicted next-token probability distribution at every time step.
 
-Model hierarchy
----------------
-- **AbstractRNN** : Implements baseline functionality and abstract methods.
-  - **ExactRNN**  : Implements the exact nonlinear forward-filter recurrence.
-  - **ModelA**    : Linear recurrence with Cayley-stable A, stochastic readout.
-    - **ModelAstar** : Model A with weights defined via a linearization. See ModelA.initialize_Astar.
-  - **ModelB**    : Linear recurrence with Cayley-stable A, affine softmax readout.
 """
 
-from abc import abstractmethod
-from enum import Enum
+from abc import abstractmethod, ABCMeta
 from functools import partial
 
 import jax
@@ -21,112 +13,130 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from jax.nn import logsumexp
-
+from .types import LossType, ConstraintType
 from .utils import DTYPE, params_to_stable_matrix, stable_matrix_to_params
 
-# ---------------------------------------------------------------------------
-# LossType enum
-# ---------------------------------------------------------------------------
+__all__ = ["AbstractRNN","ExactRNN", "ModelA", "ModelB"]
 
+def _validate_scheme(schema: list[tuple[str, tuple[int], str]] ) -> bool:
+    """Checks whether schema is valid"""
+    names = set()
+    for entry in schema:
+        if len(entry) != 3:
+            return False
+        name, shape, constraint = entry
+        if not isinstance(name, str):
+            return False
+        if name in names:
+            return False
+        names.add(name)
+        if not isinstance(shape, tuple):
+            return False
+        if any(d <= 0 for d in shape):
+            return False
+        if not isinstance(constraint, ConstraintType):
+            return False
+        if constraint is ConstraintType.STABLE:
+            if len(shape) != 2 or shape[0] != shape[1]:
+                return False
+    return True
 
-class LossType(str, Enum):
-    """Training / evaluation objective."""
-    EMISSIONS = "emissions"
-    KL = "kl"
-    HILBERT = "hilbert"
+def _weights_needed_to_enforce_constraint(name: str, shape: tuple[int], constraint: ConstraintType = ConstraintType.UNCONSTRAINED)-> list[tuple[str, tuple[int]]]:
+    """Return list of (raw_name, raw_shape) for a single schema entry.
 
+    Args:
+        name (str): Parameter name.
+        shape (tuple[int]): Shape of the parameter.
+        constraint (ConstraintType, optional): Type of constraint ('stable', 'unconstrained', etc.).
 
-# ---------------------------------------------------------------------------
-# Schema-driven parameter system
-# ---------------------------------------------------------------------------
-
-
-def _raw_shapes_for_entry(name, shape, constraint):
-    """Return list of (raw_name, raw_shape) for a single schema entry."""
-    if constraint == "stable":
-        n = shape[0]
-        return [
-            (f"{name}_1", (n, n)),
+    Returns:
+        list[tuple[str, tuple[int]]]: List of raw names and shapes.
+    """
+    match constraint:
+        case ConstraintType.STABLE:
+            n = shape[0]
+            return [
+            (f"{name}_1", shape),
             (f"{name}_2", (n * (n - 1) // 2,)),
         ]
-    else:
-        return [(name, shape)]
+        case _:
+            return [(name, shape)]
 
-
-def _init_raw_weight(raw_name, raw_shape, constraint, key, ic_scale=0.01):
-    """Initialize a single raw weight tensor."""
-    if constraint == "stable":
-        return jax.random.normal(key, raw_shape, dtype=DTYPE)
-    else:
-        return jax.random.normal(key, raw_shape, dtype=DTYPE) * ic_scale
-
-
-def _transform_entry(name, constraint, raw_weights):
+def _compute_constrained_weight(name: str, constraint: ConstraintType, raw_weights: dict[str, jax.Array]) -> jax.Array:
     """Apply the constraint transform for one schema entry."""
-    if constraint == "unconstrained":
-        return raw_weights[name]
-    elif constraint == "stable":
-        return params_to_stable_matrix(raw_weights[f"{name}_1"], raw_weights[f"{name}_2"], epsilon=1e-5)
-    elif constraint == "stochastic":
-        return jax.nn.softmax(raw_weights[name], axis=0)
-    elif constraint == "nonneg":
-        return raw_weights[name] ** 2
-    else:
-        raise ValueError(f"Unknown constraint: {constraint!r}")
-
-
+    match constraint:
+        case ConstraintType.UNCONSTRAINED:
+            return raw_weights[name]
+        case ConstraintType.STABLE:
+            return params_to_stable_matrix(raw_weights[f"{name}_1"], raw_weights[f"{name}_2"], epsilon=1e-5)
+        case ConstraintType.STOCHASTIC:
+            return jax.nn.softmax(raw_weights[name], axis=0)
+        case ConstraintType.NONNEGATIVE:
+            return raw_weights[name] ** 2
+    
 # ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
 
-
-class AbstractRNN:
+class AbstractRNN(metaclass=ABCMeta):
     """Base class for all RNN filtering models.
 
     Subclasses must implement:
-      - ``schema(n, m)`` classmethod returning parameter specifications
-      - ``integrate(...)`` static method defining the recurrence
+        - `schema(n, m)` (classmethod) returning parameter specifications.
+        - `integrate(...)` (staticmethod) defining the recurrence.
 
-    Construction: ``RNN(latent_dim=2, emission_dim=6, seed=0)``
+    Construction example:
+        rnn = AbstractRNN(latent_dim=2, emission_dim=6, seed=0)
 
-    Weight access:
-      - ``rnn.weights``      — transformed weights dict (e.g. ``{"A": ..., "B": ..., "C": ...}``)
-      - ``rnn.raw_weights``  — raw backend weights dict (e.g. ``{"A_1": ..., "A_2": ..., "B": ..., "C": ...}``)
+    Attributes:
+        latent_dim (int): Dimensionality of the latent state.
+        emission_dim (int): Number of discrete emissions.
+        raw_weights (dict): Raw backend weights (e.g., {"A_1": ..., "A_2": ..., "B": ..., "C": ...}).
+        isFrozen (dict): Boolean map indicating whether each raw weight is frozen.
     """
 
-    def __init__(self, latent_dim: int, emission_dim: int, seed: int = 0):
+    def __init__(self, latent_dim: int, emission_dim: int, seed: int = 0, ic_scale: float = 0.01):
+        """Initialize RNN weights according to schema and (optional) PRNG seed.
+
+        Args:
+            latent_dim (int): Dimensionality of the RNN latent state.
+            emission_dim (int): Dimensionality of the RNN output.
+            seed (int, optional): Random seed for weight initialization. Defaults to 0.
+            ic_scale (float, optional): variance of initial weights.
+
+        Raises:
+            ValueError: If scheme is invalid
+        """
         self.latent_dim = latent_dim
         self.emission_dim = emission_dim
+        
         self._schema = self.schema(latent_dim, emission_dim)
+        if not _validate_scheme(self._schema):
+            raise ValueError("Scheme is invalid.")
 
-        key = jax.random.PRNGKey(seed)
-        raw_entries = []
-        for name, shape, constraint in self._schema:
-            raw_entries.extend(_raw_shapes_for_entry(name, shape, constraint))
+        self.seed = seed
 
-        keys = jax.random.split(key, len(raw_entries))
-        self.raw_weights = {}
-        for (raw_name, raw_shape), k in zip(raw_entries, keys):
-            constraint = self._constraint_for_raw(raw_name)
-            self.raw_weights[raw_name] = _init_raw_weight(raw_name, raw_shape, constraint, k)
+        # compute number of raw weights needed and
+        # split rng key into parts for each raw weight
+        prng_key = jax.random.PRNGKey(seed)
+        raw_schema = [
+            raw_entry
+            for entry in self._schema
+            for raw_entry in _weights_needed_to_enforce_constraint(*entry)
+        ]
+        keys = jax.random.split(prng_key, len(raw_schema))
 
-        self.isFrozen = jax.tree.map(lambda _: False, self.raw_weights)
-
-    def _constraint_for_raw(self, raw_name):
-        """Look up the constraint type for a raw weight name."""
-        for name, _shape, constraint in self._schema:
-            if constraint == "stable":
-                if raw_name in (f"{name}_1", f"{name}_2"):
-                    return constraint
-            else:
-                if raw_name == name:
-                    return constraint
-        return "unconstrained"
+        # Initialize
+        self.raw_weights = {
+            raw_name: jax.random.normal(key, raw_shape, dtype=DTYPE) * ic_scale
+            for (raw_name, raw_shape), key in zip(raw_schema, keys)
+        }
+        self.isFrozen = {name: False for name in self.raw_weights}
 
     @classmethod
     @abstractmethod
-    def schema(cls, n, m):
-        """Return list of (name, shape, constraint) tuples defining weights."""
+    def schema(cls, n, m)-> list[tuple[str, tuple[int], ConstraintType]]:
+        """Return list of (name: str, shape: tuple[int], constraint: ConstraintType) tuples defining network weights."""
         raise NotImplementedError
 
     @staticmethod
@@ -193,7 +203,7 @@ class AbstractRNN:
         schema = cls.schema(0, 0)
         result = {}
         for name, _shape, constraint in schema:
-            result[name] = _transform_entry(name, constraint, raw_weights)
+            result[name] = _compute_constrained_weight(name, constraint, raw_weights)
         return result
 
     # ------------------------------------------------------------------
@@ -409,11 +419,9 @@ class AbstractRNN:
 
         return loss_history
 
-
 # ---------------------------------------------------------------------------
 # ExactRNN  (ground-truth nonlinear filter)
 # ---------------------------------------------------------------------------
-
 
 class ExactRNN(AbstractRNN):
     """Exact forward-filter dynamics: ``x_t = log(A exp(x_{t-1})) + B[:, y_t]``.
@@ -425,9 +433,9 @@ class ExactRNN(AbstractRNN):
     @classmethod
     def schema(cls, n, m):
         return [
-            ("A", (n, n), "stochastic"),
-            ("B", (n, m), "unconstrained"),
-            ("C", (m, n), "stochastic"),
+            ("A", (n, n), ConstraintType.STOCHASTIC),
+            ("B", (n, m), ConstraintType.UNCONSTRAINED),
+            ("C", (m, n), ConstraintType.STOCHASTIC),
         ]
 
     @staticmethod
@@ -461,9 +469,9 @@ class ModelA(AbstractRNN):
     @classmethod
     def schema(cls, n, m):
         return [
-            ("A", (n, n), "stable"),
-            ("B", (n, m), "unconstrained"),
-            ("C", (m, n), "stochastic"),
+            ("A", (n, n), ConstraintType.STABLE),
+            ("B", (n, m), ConstraintType.UNCONSTRAINED),
+            ("C", (m, n), ConstraintType.STOCHASTIC),
         ]
 
     @staticmethod
@@ -514,10 +522,10 @@ class ModelB(AbstractRNN):
     @classmethod
     def schema(cls, n, m):
         return [
-            ("A", (n, n), "stable"),
-            ("B", (n, m), "unconstrained"),
-            ("C", (m, n), "unconstrained"),
-            ("d", (m,), "unconstrained"),
+            ("A", (n, n), ConstraintType.STABLE),
+            ("B", (n, m), ConstraintType.UNCONSTRAINED),
+            ("C", (m, n), ConstraintType.UNCONSTRAINED),
+            ("d", (m,), ConstraintType.UNCONSTRAINED),
         ]
 
     @staticmethod

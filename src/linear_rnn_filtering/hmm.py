@@ -1,4 +1,5 @@
-"""Discrete Hidden Markov Model, implemented in JAX, with batch sampling and exact forward filtering."""
+"""Discrete Hidden Markov Model, implemented in JAX, with batch sampling and exact forward filtering.
+Also includes HMMFactory methods for constructing standard HMM instances"""
 
 from functools import partial
 import jax
@@ -6,6 +7,7 @@ import jax.numpy as jnp
 import numpy as np
 from numpy.typing import NDArray
 
+__all__ = ["DiscreteHMM", "HMMFactory"]
 
 class DiscreteHMM:
     """A discrete-state, discrete-emission Hidden Markov Model.
@@ -223,3 +225,61 @@ def _forward_filter_scan(
     next_token_posterior = jnp.einsum("ij,btj->bti", emission_matrix, next_token_posterior)
 
     return latent_posterior, next_token_posterior
+
+
+class HMMFactory:
+    """Factory for creating pre-configured `DiscreteHMM` instance types."""
+
+    @staticmethod
+    def dishonest_casino() -> DiscreteHMM:
+        """Construct the "dishonest casino" HMM.
+
+        This is a two-state HMM modeling a fair die versus a loaded die
+        (biased toward 6). The transition matrix has high self-transition
+        probabilities, representing sticky latent states.
+
+        Returns:
+            DiscreteHMM: HMM instance
+        """
+        hmm = DiscreteHMM(2, 6)
+        hmm.set_transfer_matrix(np.array([
+            [0.95, 0.10],
+            [0.05, 0.90],
+        ]))
+        hmm.set_emission_matrix(np.array([
+            [1 / 6, 1 / 6, 1 / 6, 1 / 6, 1 / 6, 1 / 6],
+            [1 / 10, 1 / 10, 1 / 10, 1 / 10, 1 / 10, 1 / 2],
+        ]).T)
+        return hmm
+
+    @staticmethod
+    def random_dirichlet(
+        latent_dim: int = 2,
+        emission_dim: int = 2,
+        transfer_concentration: float = 0.9,
+        emission_concentration: float = 0.9,
+    ) -> DiscreteHMM:
+        """Construct a random HMM with Dirichlet-sampled matrices.
+
+        The latent-to-latent transition matrix and latent-to-emission
+        matrix are constructed from columns sampled independently from
+        Dirichlet distributions with concentrations `transfer_concentration`
+        and `emission_concentration`, respectively.
+
+        Args:
+            latent_dim (int, optional): Number of hidden states. Defaults to 2.
+            emission_dim (int, optional): Number of emission states. Defaults to 2.
+            transfer_concentration (float, optional): Dirichlet concentration parameter for the transition matrix.
+                Values < 1 produce peaky more sparse matrices; values > 1 produce more uniform matrices
+            emission_concentration (float, optional): Dirichlet concentration parameter for the emission matrix.
+                Values < 1 produce peaky more sparse matrices; values > 1 produce more uniform matrices
+
+        Returns:
+            DiscreteHMM: HMM instance
+        """
+        hmm = DiscreteHMM(latent_dim=latent_dim, emission_dim=emission_dim)
+        transfer_matrix = np.random.dirichlet(transfer_concentration * np.ones(latent_dim), size=latent_dim).T
+        hmm.set_transfer_matrix(transfer_matrix)
+        emission_matrix = np.random.dirichlet(emission_concentration * np.ones(emission_dim), size=latent_dim).T
+        hmm.set_emission_matrix(emission_matrix)
+        return hmm

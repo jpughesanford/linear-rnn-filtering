@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from linear_rnn_filtering import DiscreteHMM, HMMFactory
+from linear_rnn_filtering.hmm import DiscreteHMM, HMMFactory
 
 
 class TestDiscreteHMM:
@@ -57,6 +57,6 @@ class TestHMMFactory:
         assert hmm.emission_dim == 8
 
     def test_random_dirichlet_stochastic(self):
-        hmm = HMMFactory.random_dirichlet(latent_dim=3, emission_dim=5, concentration=0.5)
+        hmm = HMMFactory.random_dirichlet(latent_dim=3, emission_dim=5, transfer_concentration=0.5, emission_concentration=0.5)
         assert np.allclose(hmm.transfer_matrix.sum(axis=0), 1.0)
         assert np.allclose(hmm.emission_matrix.sum(axis=0), 1.0)
