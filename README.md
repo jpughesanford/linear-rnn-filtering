@@ -21,6 +21,7 @@ pip install git+https://github.com/jpughesanford/linear-rnn-filtering.git
 import numpy as np
 from linear_rnn_filtering.hmm import HMMFactory
 from linear_rnn_filtering.rnn import ModelA, ExactRNN
+from linear_rnn_filtering.types import LossType
 
 # Create a two-state "dishonest casino" HMM
 hmm = HMMFactory.dishonest_casino()
@@ -33,7 +34,7 @@ latent_posterior, next_token_posterior = hmm.compute_posterior(emissions)
 
 # Create a Model A RNN and train it to match the posterior
 rnn = ModelA(hmm.latent_dim, hmm.emission_dim, seed=0)
-loss = rnn.train_on_posterior(hmm, batch_size=100, time_steps=500, optimization_steps=1000)
+loss = rnn.train(hmm, loss=LossType.KL, batch_size=100, time_steps=500, optimization_steps=1000)
 
 # run the RNN, forcing it with the emission sequences. Its output will approximate the true next token posterior
 output_timeseries, latent_timeseries = rnn.predict(emissions)
@@ -65,24 +66,31 @@ with whatever latent dynamics and non-linear readout you want, subclass `Abstrac
 an `integrate`static method: (below, we use ``sin`` and ``cos`` just to express that evolution can be nonlinear)
 
 ```python
+from linear_rnn_filtering.types import LossType, ConstraintType
 from linear_rnn_filtering.rnn import AbstractRNN
-import numpy as np
+import jax.numpy as jnp
 
-class MyModel(AbstractRNN):
+class MyNonlinearModel(AbstractRNN):
     @classmethod
     def schema(cls, n, m):
         return [
-            ("A", (n, n), "stable"),        # Cayley-parameterised
-            ("B", (n, m), "unconstrained"),  # free parameters
-            ("C", (m, n), "stochastic"),     # softmax-normalised columns
+            ("A", (n, n), ConstraintType.STABLE),        # Cayley-parameterised
+            ("B", (n, m), ConstraintType.UNCONSTRAINED),  # free parameters
+            ("C", (m, n), ConstraintType.NONNEGATIVE),     # softmax-normalised columns
         ]
 
     @staticmethod
     def integrate(A, B, C, x_prev, emission_t):
-        x_t = A @ np.cos(x_prev) + B[:, emission_t]
-        y_t = C @ np.sin(x_t)
+        x_t = A @ jnp.sin(x_prev) + B[:, emission_t]
+        y_t = C @ jnp.cos(x_t)
         return x_t, y_t
+
+# for some hmm...
+rnn = MyNonlinearModel(hmm.latent_dim, hmm.emission_dim, seed=0)
+loss = rnn.train(hmm, loss=LossType.KL, batch_size=100, time_steps=500, optimization_steps=1000)
 ```
+
+Recall that integrate has to function with JAX arrays. 
 
 Often, you want to constrain the weights, such that, for example, ``A`` is stable and the latent dynamics do not blow up. 
 Our code allows you to constrain any weight parameter to be either:
