@@ -129,10 +129,10 @@ Our code allows you to constrain any weight parameter using the following built-
 
 | Key               | Guarantee                                                                                                                                                                   | Parameterization                                                                |
 |-------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|---------------------------------------------------------------------------------|
-| `"unconstrained"` | None                                                                                                                                                                        | `X = dof`                                                                       |
+| `"unconstrained"` | None                                                                                                                                                                        | `value = dof`                                                                   |
 | `"stable"`        | Spectral radius ≤ 1 (Schur stable). Square matrices only. All stable matrices representable except those with eigenvalue exactly `−1`. See manuscript appendix for details. | `value = cayley(Y @ Y.T + ε I + skew(Z))` where `dof = (Y,Z)` are unconstrained |
 | `"stochastic"`    | Columns non-negative and sum to one                                                                                                                                         | `value = softmax(dof, axis=0)` where `dof` is unconstrained                     |
-| `"nonnegative"`   | All entries non-negative                                                                                                                                                    | `X = dof*dof` where `dof` is unconstrained                                      |
+| `"nonnegative"`   | All entries non-negative                                                                                                                                                    | `value = dof*dof` where `dof` is unconstrained                                  |
 
 Mixing multiple constraint types on a single parameter is not supported.
 
