@@ -118,14 +118,19 @@ class DiscreteHMM:
         """
         transfer_matrix = np.asarray(transfer_matrix)
         if transfer_matrix.shape != (self.latent_dim, self.latent_dim):
-            raise ValueError(f"Transfer matrix has wrong shape. Expected {(self.latent_dim, self.latent_dim)}, got {transfer_matrix.shape}.")
-        colsum = transfer_matrix.sum(axis=0)
-        if not np.allclose(colsum, 1, 1e-16):
-            raise ValueError(f"Transfer matrix is not stochastic. Worst column sum deviation from one: {colsum.max()}")
+            raise ValueError(
+                f"Transfer matrix has wrong shape. "
+                f"Expected {(self.latent_dim, self.latent_dim)}, got {transfer_matrix.shape}."
+            )
+        column_sum = transfer_matrix.sum(axis=0)
+        if not np.allclose(column_sum, 1, 1e-16):
+            raise ValueError(
+                f"Transfer matrix is not stochastic. Worst column sum deviation from one: {column_sum.max()}"
+            )
         eigenvalues, eigenvectors = np.linalg.eig(transfer_matrix)
         idx = np.argmin(np.abs(eigenvalues - 1))
         if np.linalg.norm(np.imag(eigenvectors[:, idx])) > 1e-8:
-            raise ValueError(f"Leading eigenvector appears to be imaginary")
+            raise ValueError("Leading eigenvector appears to be imaginary")
         assert np.linalg.norm(np.imag(eigenvectors[:, idx])) < 1e-8
         stationary = np.real(eigenvectors[:, idx])
         stationary = stationary / stationary.sum()

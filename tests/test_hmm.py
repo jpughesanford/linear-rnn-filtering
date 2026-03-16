@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from linear_rnn_filtering.hmm import DiscreteHMM, HMMFactory
+from rnn_filtering.hmm import DiscreteHMM, HMMFactory
 
 
 class TestDiscreteHMM:

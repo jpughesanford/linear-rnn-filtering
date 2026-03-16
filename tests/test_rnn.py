@@ -5,16 +5,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from linear_rnn_filtering.hmm import HMMFactory
-from linear_rnn_filtering.parameters import (
+from rnn_filtering.hmm import HMMFactory
+from rnn_filtering.parameters import (
     NonnegativeParameter,
     Parameter,
     StableParameter,
     StochasticParameter,
     register_parameter_type,
 )
-from linear_rnn_filtering.rnn import AbstractRNN, ExactRNN, ModelA, ModelB
-from linear_rnn_filtering.types import ConstraintType, LossType
+from rnn_filtering.rnn import AbstractRNN, ExactRNN, ModelA, ModelB
+from rnn_filtering.types import ConstraintType, LossType
 
 
 @pytest.fixture

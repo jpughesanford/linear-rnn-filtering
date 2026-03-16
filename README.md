@@ -1,4 +1,4 @@
-# linear-rnn-filtering
+# rnn-filtering
 
 This repository provides the base code that was used in [submitted manuscript] to
 investigate the ability of Recurrent Neural Networks (RNNs) with linear latent dynamics to
@@ -12,30 +12,30 @@ and RNN classes that we developed for this project.
 
 You can install this package into your local environment using pip:
 ```bash
-pip install git+https://github.com/jpughesanford/linear-rnn-filtering.git
+pip install git+https://github.com/jpughesanford/rnn-filtering.git
 ```
 
 ## Repository structure
 
 The library is designed around two primary, top-level modules:
 
-- **`linear_rnn_filtering.hmm`** — Discrete HMM simulation and exact Bayesian inference.
+- **`rnn_filtering.hmm`** — Discrete HMM simulation and exact Bayesian inference.
   Includes `DiscreteHMM` and `HMMFactory` for constructing standard HMMs.
 
-- **`linear_rnn_filtering.rnn`** — RNN architectures for approximating HMM forward filtering.
+- **`rnn_filtering.rnn`** — RNN architectures for approximating HMM forward filtering.
   Includes `AbstractRNN`, `ExactRNN`, `ModelA`, and `ModelB`. This submodule allows the user to easily design their own constrained RNN architectures as well. 
 
 Additionally, the `rnn.parameters` submodule exposes the `Parameter` base class (see below for more about parameters), along with a `register_parameter_type` method for user-defined constraints.
 
 Shared enum types (`LossType`, `ConstraintType`) and the `Schema` type alias live in
-`linear_rnn_filtering.types`.
+`rnn_filtering.types`.
 
 ## Quick start
 
 ```python
 import numpy as np
-from linear_rnn_filtering.hmm import HMMFactory
-from linear_rnn_filtering.rnn import ModelA, ExactRNN
+from rnn_filtering.hmm import HMMFactory
+from rnn_filtering.rnn import ModelA, ExactRNN
 
 # Create a two-state "dishonest casino" HMM
 hmm = HMMFactory.dishonest_casino()
@@ -146,7 +146,7 @@ a string key. That key can then be used in any schema dict exactly like the buil
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-from linear_rnn_filtering import rnn
+from rnn_filtering import rnn
 
 class BoundedParameter(rnn.parameters.Parameter):
     """Constrains all entries to the open interval (0, 1) via the sigmoid function."""
@@ -187,7 +187,7 @@ with whatever latent dynamics and non-linear readout you want, subclass `Abstrac
 static methods: (below, we use `sin` and `cos` just to express that evolution can be nonlinear)
 
 ```python
-from linear_rnn_filtering.rnn import AbstractRNN
+from rnn_filtering.rnn import AbstractRNN
 import jax.numpy as jnp
 
 class MyNonlinearModel(AbstractRNN):

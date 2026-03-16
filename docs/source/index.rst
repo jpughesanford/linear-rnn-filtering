@@ -1,5 +1,5 @@
-Linear RNN Filtering
-====================
+RNN Filtering
+=============
 
 This repository provides the base code that was used in [submitted manuscript] to
 investigate the ability of Recurrent Neural Networks (RNNs) with linear latent dynamics to
@@ -26,36 +26,36 @@ The rnn module contains classes:
 API Reference
 =============
 
-linear_rnn_filtering.hmm
+rnn_filtering.hmm
 ------------------------
 
 .. autosummary::
    :toctree: _autosummary/hmm
    :caption: Hidden Markov Models
 
-   ~linear_rnn_filtering.hmm.DiscreteHMM
-   ~linear_rnn_filtering.hmm.HMMFactory
+   ~rnn_filtering.hmm.DiscreteHMM
+   ~rnn_filtering.hmm.HMMFactory
 
 
-linear_rnn_filtering.rnn
+rnn_filtering.rnn
 ------------------------
 
 .. autosummary::
    :toctree: _autosummary/rnn
    :caption: RNN models
 
-   ~linear_rnn_filtering.rnn.AbstractRNN
-   ~linear_rnn_filtering.rnn.ExactRNN
-   ~linear_rnn_filtering.rnn.ModelA
-   ~linear_rnn_filtering.rnn.ModelB
+   ~rnn_filtering.rnn.AbstractRNN
+   ~rnn_filtering.rnn.ExactRNN
+   ~rnn_filtering.rnn.ModelA
+   ~rnn_filtering.rnn.ModelB
 
 
-linear_rnn_filtering.types
+rnn_filtering.types
 --------------------------
 
 .. autosummary::
    :toctree: _autosummary/types
    :caption: Enums and type definitions
 
-   ~linear_rnn_filtering.types.LossType
-   ~linear_rnn_filtering.types.ConstraintType
+   ~rnn_filtering.types.LossType
+   ~rnn_filtering.types.ConstraintType

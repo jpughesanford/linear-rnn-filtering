@@ -7,7 +7,7 @@ from jax.typing import ArrayLike
 
 from .types import ConstraintType
 
-__all__ = ["CONSTRUCTOR_MAP", "_CUSTOM_CONSTRUCTOR_MAP","Parameter", "register_parameter_type"]
+__all__ = ["CONSTRUCTOR_MAP", "_CUSTOM_CONSTRUCTOR_MAP", "Parameter", "register_parameter_type"]
 
 # ---------------------------------------------------------------------------
 # Parameter base (unconstrained)

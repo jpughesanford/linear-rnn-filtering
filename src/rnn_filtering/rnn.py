@@ -24,7 +24,7 @@ from .loss_functions import LOSS_MAP
 from .parameters import _CUSTOM_CONSTRUCTOR_MAP, CONSTRUCTOR_MAP, Parameter
 from .types import ConstraintType, LossType, Schema
 
-__all__ = ["AbstractRNN", "ExactRNN", "ModelA", "ModelB", "Parameter","parameters"]
+__all__ = ["AbstractRNN", "ExactRNN", "ModelA", "ModelB", "Parameter", "parameters"]
 
 # ---------------------------------------------------------------------------
 # Schema validation

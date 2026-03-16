@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "linear-rnn-filtering"
+name = "rnn-filtering"
 version = "0.1.0"
-description = "Linear RNN approximations to discrete HMM forward filtering"
+description = "HMM and RNN classes for studying RNN approximations to Bayesian forward filtering of discrete-time, discrete-space HMMs."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -41,7 +41,7 @@ docs = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/linear_rnn_filtering"]
+packages = ["src/rnn_filtering"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
