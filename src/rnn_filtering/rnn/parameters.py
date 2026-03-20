@@ -3,6 +3,7 @@ from collections.abc import Callable
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from jax.typing import ArrayLike
 
 from .types import ConstraintType
@@ -239,18 +240,26 @@ class StableParameter(Parameter):
         """
         n = A_stable.shape[0]
         eye = jnp.eye(n)
+
+        eigenvalues = np.linalg.eigvals(np.array(A_stable))
+        if np.any(np.abs(eigenvalues + 1) < 1e-8):
+            raise ValueError(
+                "stable_matrix_to_params: matrices with eigenvalue -1 are not representable "
+                "by the Cayley parameterization."
+            )
+
         A_sum = StableParameter.cayley(A_stable)
 
         A_pd = 0.5 * (A_sum + A_sum.T)
         SPD = A_pd - epsilon * eye
         vals, vecs = jnp.linalg.eigh(SPD)
-        vals = jnp.maximum(vals, 1e-9)
+        vals = jnp.maximum(vals, epsilon)  # epsilon >> float32 machine eps, so Cholesky stays stable
         SPD = (vecs * vals) @ vecs.T
         A1 = jnp.linalg.cholesky(SPD)
 
         A_skew = 0.5 * (A_sum - A_sum.T)
         idx = jnp.tril_indices(n, k=-1)
-        A2 = A_skew[idx]
+        A2 = 2 * A_skew[idx]
 
         return A1, A2
 

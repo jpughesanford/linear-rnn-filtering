@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "rnn-filtering"
-version = "0.1.0"
+version = "1.0.0"
 description = "HMM and RNN classes for studying RNN approximations to Bayesian forward filtering of discrete-time, discrete-space HMMs."
 readme = "README.md"
 license = "MIT"
@@ -32,6 +32,7 @@ dependencies = [
 dev = [
     "pytest>=7",
     "pytest-cov>=4",
+    "pytest-benchmark>=4",
     "ruff>=0.4",
 ]
 docs = [

@@ -1,14 +1,17 @@
-"""RNN architectures for approximating HMM forward filtering.
+"""RNN architectures for approximating AbstractHMM forward filtering.
 
 Each model takes a sequence of discrete emissions and produces a
 predicted next-token probability distribution at every time step.
 
 """
 
+from __future__ import annotations
+
 import warnings
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from functools import partial
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -19,10 +22,12 @@ from jax.nn import logsumexp
 from jax.typing import ArrayLike
 
 from . import parameters
-from .hmm import DiscreteHMM
 from .loss_functions import LOSS_MAP
 from .parameters import _CUSTOM_CONSTRUCTOR_MAP, CONSTRUCTOR_MAP, Parameter
 from .types import ConstraintType, LossType, Schema
+
+if TYPE_CHECKING:
+    from rnn_filtering.hmm.models import AbstractHMM as GenericHMM
 
 __all__ = ["AbstractRNN", "ExactRNN", "ModelA", "ModelB", "Parameter", "parameters"]
 
@@ -256,18 +261,18 @@ class AbstractRNN(metaclass=ABCMeta):
 
     def sample_loss(
         self,
-        hmm: DiscreteHMM,
+        hmm: GenericHMM,
         *,
         loss: str = LossType.KL,
         batch_size: int = 100,
         time_steps: int = 1000,
         x0: ArrayLike | None = None,
     ) -> jax.Array:
-        """Samples a new batch of trajectories from an :class:``DiscreteHMM`` and returns the
-        unaggregated loss over every time step and sample
+        """Samples a new batch of trajectories from an :class:`AbstractHMM` and returns the
+        unaggregated loss over every time step and sample.
 
         Args:
-            hmm (DiscreteHMM): HMM instance used to generate evaluation data.
+            hmm (AbstractHMM): HMM instance used to generate evaluation data.
             loss (str, optional): string describing the loss function to use. Currently accepted values are
                 "emissions", "kl" (default), and "hilbert". See :class:`LossType` for details.
             batch_size (int, optional): Number of independent trajectories to sample. Defaults to 100.
@@ -296,7 +301,7 @@ class AbstractRNN(metaclass=ABCMeta):
 
     def train(
         self,
-        hmm: DiscreteHMM,
+        hmm: GenericHMM,
         *,
         loss: str = LossType.KL,
         batch_size: int = 100,
@@ -307,12 +312,12 @@ class AbstractRNN(metaclass=ABCMeta):
         print_every: int = 100,
         x0: ArrayLike | None = None,
     ) -> ArrayLike:
-        """Batch trains the RNN using sequences sampled from a passed in :class:`DiscreteHMM` instance.
+        """Batch trains the RNN using sequences sampled from a passed in :class:`AbstractHMM` instance.
 
         Handles data sampling, optimizer construction, and gradient updates. Only unfrozen weights are trained.
 
         Args:
-            hmm (DiscreteHMM): HMM instance used to generate training data.
+            hmm (AbstractHMM): HMM instance used to generate training data.
             loss (str, optional): string describing the loss function to use. Currently accepted values are
                 "emissions", "kl" (default), and "hilbert". See :class:`LossType` for details.
             batch_size (int): Number of independent trajectories per epoch.
@@ -379,37 +384,13 @@ class AbstractRNN(metaclass=ABCMeta):
 
     @classmethod
     @partial(jax.jit, static_argnums=0)
-    def _forward_scan(
-        cls, params: dict[str, Parameter], emissions: jax.Array, x0: jax.Array
-    ) -> tuple[jax.Array, jax.Array]:
-        """Run the RNN on a single emission sequence via ``jax.lax.scan``.
-
-        Args:
-            params (dict[str, Parameters]): current RNN instance parameters.
-            emissions (jax.Array): Emission indices of shape (T,), dtype int32.
-            x0 (jax.Array): Initial hidden state of shape (latent_dim,).
-
-        Returns:
-            Y (jax.Array): Predicted distributions of shape (T, emission_dim).
-            X (jax.Array): Hidden states of shape (T, latent_dim).
-        """
-        w = {name: parameter.get_value() for name, parameter in params.items()}
-
-        def step(x_prev, emission_t):
-            x_t, y_t = cls.integrate(x_prev=x_prev, emission_t=emission_t, **w)
-            return x_t, (y_t, x_t)
-
-        _, (Y, X) = jax.lax.scan(step, x0, emissions)
-        return Y, X
-
-    @classmethod
     def _batched_forward(
         cls, params: dict[str, Parameter], emissions: jax.Array, x0: jax.Array
     ) -> tuple[jax.Array, jax.Array]:
-        """Vectorised forward pass over a batch of sequences via ``jax.vmap``.
+        """JIT-compiled batched forward pass via ``jax.vmap`` over ``jax.lax.scan``.
 
         Args:
-            params (dict[str,  Parameter]): Dictionary of RNN parameters.
+            params (dict[str, Parameter]): Current RNN instance parameters.
             emissions (jax.Array): Emission indices of shape (B, T), dtype int32.
             x0 (jax.Array): Initial hidden state of shape (latent_dim,).
 
@@ -417,7 +398,17 @@ class AbstractRNN(metaclass=ABCMeta):
             Y (jax.Array): Predicted distributions of shape (B, T, emission_dim).
             X (jax.Array): Hidden states of shape (B, T, latent_dim).
         """
-        return jax.vmap(cls._forward_scan, in_axes=(None, 0, None))(params, emissions, x0)
+        w = {name: parameter.get_value() for name, parameter in params.items()}
+
+        def step(x_prev, emission_t):
+            x_t, y_t = cls.integrate(x_prev=x_prev, emission_t=emission_t, **w)
+            return x_t, (y_t, x_t)
+
+        def scan_single(emissions_single):
+            _, (Y, X) = jax.lax.scan(step, x0, emissions_single)
+            return Y, X
+
+        return jax.vmap(scan_single)(emissions)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -486,20 +477,22 @@ class ExactRNN(AbstractRNN):
         y_t = C @ jax.nn.softmax(x_t)
         return x_t, y_t
 
-    def initialize_weights(self, hmm: DiscreteHMM) -> None:
+    def initialize_weights(self, hmm: GenericHMM) -> None:
         """Set parameter values to match the HMM exactly.
 
-        This produces an RNN that exactly reproduces the HMM forward
+        This produces an RNN that exactly reproduces the AbstractHMM forward
         filter.
 
         Args:
-            hmm (DiscreteHMM): Source HMM whose parameters are copied.
+            hmm (AbstractHMM): Source HMM whose parameters are copied.
         """
+        transfer_matrix = np.array(jax.vmap(hmm.transfer_operator.apply)(jnp.eye(hmm.latent_dim))).T
+        emission_matrix = np.array(jax.vmap(hmm.emission_operator.apply)(jnp.eye(hmm.latent_dim))).T
         self.set_parameter_values(
             {
-                "A": hmm.transfer_matrix,
-                "B": np.log(hmm.emission_matrix.T),
-                "C": hmm.emission_matrix @ hmm.transfer_matrix,
+                "A": transfer_matrix,
+                "B": np.log(emission_matrix.T),
+                "C": emission_matrix @ transfer_matrix,
             }
         )
 
@@ -551,8 +544,8 @@ class ModelA(AbstractRNN):
         y_t = C @ jax.nn.softmax(x_t)
         return x_t, y_t
 
-    def initialize_astar(self, hmm: DiscreteHMM) -> None:
-        """Initialize parameter values from an HMM via log-probability linearization.
+    def initialize_astar(self, hmm: GenericHMM) -> None:
+        """Initialize parameter values from an AbstractHMM via log-probability linearization.
 
         Computes the Jacobian of the log-transfer map at the stationary
         distribution and sets ``A``, ``B``, ``C`` accordingly. This provides
@@ -560,18 +553,20 @@ class ModelA(AbstractRNN):
         near stationarity.
 
         Args:
-            hmm (DiscreteHMM): Source HMM whose parameters define the linearization point.
+            hmm (AbstractHMM): Source HMM whose parameters define the linearization point.
         """
-        T = hmm.transfer_matrix
-        E = hmm.emission_matrix
+        transfer_matrix = np.array(jax.vmap(hmm.transfer_operator.apply)(jnp.eye(hmm.latent_dim))).T
+        emission_matrix = np.array(jax.vmap(hmm.emission_operator.apply)(jnp.eye(hmm.latent_dim))).T
         p = hmm.latent_stationary_density
 
-        Tp = T @ p
-        J = (T * p[None, :]) / Tp[:, None]
-        f = np.log(T @ p)
+        Tp = transfer_matrix @ p
+        J = (transfer_matrix * p[None, :]) / Tp[:, None]
+        f = np.log(transfer_matrix @ p)
         bias = f - J @ np.log(p)
 
-        self.set_parameter_values({"A": J, "B": np.log(E.T) + bias[:, None], "C": E @ T})
+        self.set_parameter_values(
+            {"A": J, "B": np.log(emission_matrix.T) + bias[:, None], "C": emission_matrix @ transfer_matrix}
+        )
 
 
 # ---------------------------------------------------------------------------

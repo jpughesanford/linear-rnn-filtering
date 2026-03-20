@@ -1,8 +1,8 @@
-"""HMM and RNN classes for studying RNN approximations to Bayesian forward filtering of
+"""HMM and RNN module for studying RNN approximations to Bayesian forward filtering of
 discrete time, discrete space HMMs. Implemented in JAX."""
 
-from . import hmm, rnn, types
+from . import hmm, rnn
 
-__all__ = ["hmm", "rnn", "types"]
+__all__ = ["hmm", "rnn"]
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"

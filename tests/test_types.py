@@ -2,7 +2,7 @@
 
 import pytest
 
-from rnn_filtering.types import ConstraintType, LossType
+from rnn_filtering.rnn.types import ConstraintType, LossType
 
 
 class TestConstruction:
