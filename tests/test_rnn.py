@@ -1,12 +1,15 @@
 """Tests for RNN models."""
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from rnn_filtering.hmm import HMMFactory
 from rnn_filtering.rnn import AbstractRNN, ExactRNN, ModelA, ModelB, Parameter
+from rnn_filtering.rnn.parameters import NonnegativeParameter, StableParameter, StochasticParameter
 from rnn_filtering.rnn.types import ConstraintType, LossType
+from rnn_filtering.training import train_on_hmm
 
 
 @pytest.fixture
@@ -27,8 +30,8 @@ class TestConstruction:
                 }
 
             @staticmethod
-            def integrate(A, B, C, x_prev, emission_t):
-                x_t = A @ x_prev + B[:, emission_t]
+            def integrate(A, B, C, x_prev, input_t):
+                x_t = A @ x_prev + B @ input_t
                 y_t = C @ x_t
                 return x_t, y_t
 
@@ -91,7 +94,8 @@ class TestPredict:
         _, emissions = casino.sample(batch_size=3, time_steps=20)
         _, posterior = casino.compute_posterior(emissions)
         x0 = np.log(casino.latent_stationary_density)
-        Y, X = rnn.predict(emissions, x0=x0)
+        inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
+        Y, X = rnn.predict(inputs, x0=x0)
         assert Y.shape == (3, 20, casino.emission_dim)
         assert X.shape == (3, 20, casino.latent_dim)
         assert np.allclose(np.array(Y), posterior, atol=1e-6)
@@ -100,7 +104,8 @@ class TestPredict:
     def test_model_b_predict(self, casino):
         rnn = ModelB(casino.latent_dim, casino.emission_dim, seed=0)
         _, emissions = casino.sample(batch_size=3, time_steps=20)
-        Y, X = rnn.predict(emissions)
+        inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
+        Y, X = rnn.predict(inputs)
         assert Y.shape == (3, 20, casino.emission_dim)
         assert X.shape == (3, 20, casino.latent_dim)
         assert np.allclose(jnp.sum(Y, axis=-1), 1.0, atol=1e-5)
@@ -111,7 +116,8 @@ class TestInitializeFromHMM:
         rnn = ModelA(casino.latent_dim, casino.emission_dim, seed=0)
         rnn.initialize_astar(casino)
         _, emissions = casino.sample(batch_size=3, time_steps=50)
-        Y, _ = rnn.predict(emissions)
+        inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
+        Y, _ = rnn.predict(inputs)
         assert Y.shape == (3, 50, casino.emission_dim)
         assert np.allclose(jnp.sum(Y, axis=-1), 1.0, atol=1e-5)
 
@@ -119,7 +125,8 @@ class TestInitializeFromHMM:
         rnn = ExactRNN(casino.latent_dim, casino.emission_dim, seed=0)
         rnn.initialize_weights(casino)
         _, emissions = casino.sample(batch_size=3, time_steps=50)
-        Y, _ = rnn.predict(emissions)
+        inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
+        Y, _ = rnn.predict(inputs)
         assert Y.shape == (3, 50, casino.emission_dim)
         assert np.allclose(jnp.sum(Y, axis=-1), 1.0, atol=1e-5)
 
@@ -127,55 +134,88 @@ class TestInitializeFromHMM:
 class TestSampleLoss:
     def test_shapes_and_signs(self, casino):
         rnn = ModelA(casino.latent_dim, casino.emission_dim, seed=0)
-        kl = rnn.sample_loss(casino, loss=LossType.KL, batch_size=5, time_steps=20)
-        hilbert = rnn.sample_loss(casino, loss=LossType.HILBERT, batch_size=5, time_steps=20)
-        emissions = rnn.sample_loss(casino, loss=LossType.EMISSIONS, batch_size=5, time_steps=20)
+        _, emissions = casino.sample(batch_size=5, time_steps=20)
+        emissions = jnp.asarray(emissions, jnp.int32)
+        inputs = jax.nn.one_hot(emissions, casino.emission_dim)
+        _, desired = casino.compute_posterior(emissions)
+
+        kl = rnn.sample_loss(inputs, desired_output=desired, output_loss=LossType.KL)
+        hilbert = rnn.sample_loss(inputs, desired_output=desired, output_loss=LossType.HILBERT)
+        one_hot_kl = rnn.sample_loss(inputs, desired_output=inputs, output_loss=LossType.KL)
+
         assert kl.shape == (5, 20)
         assert hilbert.shape == (5, 20)
-        assert emissions.shape == (5, 19)  # T-1: last timestep has no next-token target
+        assert one_hot_kl.shape == (5, 20)
         assert jnp.all(kl >= 0)
         assert jnp.all(hilbert >= 0)
+        assert jnp.all(one_hot_kl >= 0)
 
 
 class TestTraining:
     def test_train_on_posterior_with_kl_reduces_loss(self, casino):
         rnn = ModelA(casino.latent_dim, casino.emission_dim, seed=1)
-        loss = rnn.train(
+        loss = train_on_hmm(
+            rnn,
             casino,
-            loss=LossType.KL,
+            output_loss=LossType.KL,
             batch_size=10,
             time_steps=50,
             num_epochs=1,
             optimization_steps=50,
-            print_every=999,
+            print_every=0,
         )
         assert loss[-1, 0] < 0.9 * loss[0, 0]
 
     def test_train_on_posterior_with_hilbert_reduces_loss(self, casino):
         rnn = ModelA(casino.latent_dim, casino.emission_dim, seed=1)
-        loss = rnn.train(
+        loss = train_on_hmm(
+            rnn,
             casino,
-            loss=LossType.HILBERT,
+            output_loss=LossType.HILBERT,
             batch_size=10,
             time_steps=50,
             num_epochs=1,
             optimization_steps=50,
-            print_every=999,
+            print_every=0,
         )
         assert loss[-1, 0] < 0.9 * loss[0, 0]
 
     def test_train_on_emissions_reduces_loss(self, casino):
         rnn = ModelA(casino.latent_dim, casino.emission_dim, seed=2)
-        loss = rnn.train(
+        loss = train_on_hmm(
+            rnn,
             casino,
-            loss=LossType.EMISSIONS,
+            output_loss=LossType.EMISSIONS,
             batch_size=10,
             time_steps=50,
             num_epochs=1,
             optimization_steps=1000,
-            print_every=999,
+            print_every=0,
         )
         assert loss[-1, 0] < loss[0, 0]
+
+    def test_train_returns_correct_shape(self, casino):
+        rnn = ModelA(casino.latent_dim, casino.emission_dim, seed=0)
+        loss = train_on_hmm(
+            rnn, casino, num_epochs=2, optimization_steps=10, print_every=0
+        )
+        assert loss.shape == (10, 2)
+
+    def test_train_directly_with_precomputed_data(self, casino):
+        rnn = ModelA(casino.latent_dim, casino.emission_dim, seed=1)
+        _, emissions = casino.sample(10, 50)
+        emissions = jnp.asarray(emissions, jnp.int32)
+        inputs = jax.nn.one_hot(emissions, casino.emission_dim)
+        _, desired = casino.compute_posterior(emissions)
+        loss = rnn.train(
+            inputs,
+            desired_output=desired,
+            output_loss="kl",
+            optimization_steps=20,
+            print_every=0,
+        )
+        assert loss.shape == (20,)
+        assert loss[-1] < loss[0]
 
 
 class TestFreezeUnfreeze:
@@ -186,12 +226,13 @@ class TestFreezeUnfreeze:
         unfrozen = all_names - frozen
         rnn.freeze(frozen)
         before = rnn.get_parameter_values(all_names)
-        rnn.train(
+        train_on_hmm(
+            rnn,
             casino,
             batch_size=5,
             time_steps=20,
             optimization_steps=10,
-            print_every=999,
+            print_every=0,
         )
         after = rnn.get_parameter_values(all_names)
         for name in frozen:

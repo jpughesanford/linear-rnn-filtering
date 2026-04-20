@@ -1,15 +1,19 @@
-"""RNN architectures for approximating AbstractHMM forward filtering.
+"""RNN architectures for sequence modelling over discrete inputs.
 
-Each model takes a sequence of discrete emissions and produces a
-predicted next-token probability distribution at every time step.
+Each model takes a batch of vector-valued input sequences and produces a
+predicted output distribution at every time step.  Inputs may be one-hot
+embeddings of discrete symbols, soft distributions, or any other fixed-length
+vector representation.
 
+HMM-specific helpers (data sampling, posterior computation, one-hot embedding
+of emission symbols) live in :mod:`rnn_filtering.training`, not here.
 """
 
 from __future__ import annotations
 
 import warnings
 from abc import ABCMeta, abstractmethod
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from functools import partial
 from typing import TYPE_CHECKING
 
@@ -93,6 +97,40 @@ def _instantiate_from_schema(schema: Schema, prng_key: jax.Array, ic_scale: floa
 
 
 # ---------------------------------------------------------------------------
+# Loss resolution helper
+# ---------------------------------------------------------------------------
+
+
+def _resolve_loss(loss: str | Callable | None) -> Callable | None:
+    """Resolve a loss specification to a callable.
+
+    Args:
+        loss: A :class:`LossType` string, a callable, or None.
+
+    Returns:
+        A callable loss function, or None.
+
+    Raises:
+        ValueError: If a string loss type is not in :data:`LOSS_MAP`. In
+            particular, ``'emissions'`` is not directly usable here; pass
+            one-hot vectors as ``desired_output`` with ``output_loss='kl'``,
+            or use :func:`rnn_filtering.train_on_hmm` which handles embedding.
+    """
+    if loss is None:
+        return None
+    if callable(loss):
+        return loss
+    loss_type = LossType(loss)
+    if loss_type not in LOSS_MAP:
+        raise ValueError(
+            f"LossType '{loss}' is not available in AbstractRNN.train. "
+            "For emission-matching, supply one-hot embeddings as desired_output "
+            "with output_loss='kl', or call train_on_hmm with output_loss='emissions'."
+        )
+    return LOSS_MAP[loss_type]
+
+
+# ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
 
@@ -100,17 +138,21 @@ def _instantiate_from_schema(schema: Schema, prng_key: jax.Array, ic_scale: floa
 class AbstractRNN(metaclass=ABCMeta):
     """Base class for all RNN filtering models.
 
+    The RNN maps a sequence of vector-valued inputs to a sequence of output
+    distributions.  Inputs may be one-hot embeddings of discrete symbols,
+    soft distributions, or any other fixed-length vector.
+
     Subclasses must implement:
         - ``schema(latent_dim, emission_dim)`` (staticmethod) returning parameter specifications.
-        - ``integrate(..., x_prev, emission_t)`` (staticmethod) defining the recurrence.
+        - ``integrate(..., x_prev, input_t)`` (staticmethod) defining the recurrence.
 
-    Use :meth:`get_parameter_names`, :meth:`get_parameter_values`, and :meth:`set_parameter_values` to interact with
-    the RNN parameters.
+    Use :meth:`get_parameter_names`, :meth:`get_parameter_values`, and
+    :meth:`set_parameter_values` to interact with the RNN parameters.
 
     Attributes:
         latent_dim (int): Dimensionality of the latent state.
-        emission_dim (int): Number of discrete emissions.
-        seed (int): the seed used to initialize all weights (whose initial value is not specified in the schema).
+        emission_dim (int): Dimensionality of each input / output vector.
+        seed (int): Seed used to initialise all randomly-initialised weights.
     """
 
     def __init__(self, latent_dim: int, emission_dim: int, seed: int = 0, ic_scale: float = 0.01):
@@ -168,20 +210,21 @@ class AbstractRNN(metaclass=ABCMeta):
     @staticmethod
     @abstractmethod
     def integrate(**kwargs):
-        """Define the recurrence: ``(x_prev, emission_t) -> (x_t, y_t)``.
+        """Define the recurrence: ``(x_prev, input_t) -> (x_t, y_t)``.
 
         Subclasses should define the signature as
-        ``cls.integrate(x_prev=x_prev, emission_t=emission_t, **W)``
-        where values of the schema entries are passed in as keyword arguments of matching name.
+        ``cls.integrate(x_prev=x_prev, input_t=input_t, **W)``
+        where constrained weight values from the schema are passed as keyword
+        arguments of matching name.
 
         Args:
             x_prev (jax.Array): Previous hidden state of shape (latent_dim,).
-            emission_t (jax.Array): Current emission index (scalar int32).
+            input_t (jax.Array): Current input vector of shape (emission_dim,).
             **kwargs: Constrained weight arrays as defined by :meth:`schema`.
 
         Returns:
             x_t (jax.Array): Updated hidden state of shape (latent_dim,).
-            y_t (jax.Array): Predicted next-emission distribution of shape (emission_dim,).
+            y_t (jax.Array): Predicted output distribution of shape (emission_dim,).
         """
         raise NotImplementedError
 
@@ -243,57 +286,70 @@ class AbstractRNN(metaclass=ABCMeta):
     # Inference
     # ------------------------------------------------------------------
 
-    def predict(self, emissions: ArrayLike, x0: ArrayLike | None = None) -> tuple[jax.Array, jax.Array]:
-        """Predict next-token distributions for a batch of emission sequences.
+    def predict(self, inputs: ArrayLike, x0: ArrayLike | None = None) -> tuple[jax.Array, jax.Array]:
+        """Run the RNN on a batch of input sequences.
 
         Args:
-            emissions (ArrayLike): Observed emission indices of shape (B, T).
-            x0 (ArrayLike, optional): Initial hidden state of shape (latent_dim,). Defaults to zeros.
+            inputs (ArrayLike): Input vectors of shape (B, T, emission_dim).
+                May be one-hot encodings, soft distributions, or any other
+                fixed-length representation.
+            x0 (ArrayLike, optional): Initial hidden state of shape (latent_dim,).
+                Defaults to zeros.
 
         Returns:
-            Y (jax.Array): Output of the RNN, of shape (B, T, emission_dim).
-            X (jax.Array): Latent state of the RNN, of shape (B, T, latent_dim).
+            Y (jax.Array): Output distributions of shape (B, T, emission_dim).
+            X (jax.Array): Hidden states of shape (B, T, latent_dim).
         """
-        emissions = jnp.asarray(emissions, dtype=jnp.int32)
+        inputs = jnp.asarray(inputs)
         x0 = self._resolve_x0(x0)
-        output, latent = self._batched_forward(self._parameters, emissions, x0)
-        return jnp.asarray(output), jnp.asarray(latent)
+        return self._batched_forward(self._parameters, inputs, x0)
 
     def sample_loss(
         self,
-        hmm: GenericHMM,
+        inputs: ArrayLike,
         *,
-        loss: str = LossType.KL,
-        batch_size: int = 100,
-        time_steps: int = 1000,
+        desired_output: ArrayLike | None = None,
+        desired_latent: ArrayLike | None = None,
+        output_loss: str | Callable | None = None,
+        latent_loss: str | Callable | None = None,
         x0: ArrayLike | None = None,
     ) -> jax.Array:
-        """Samples a new batch of trajectories from an :class:`AbstractHMM` and returns the
-        unaggregated loss over every time step and sample.
+        """Run the RNN on ``inputs`` and return unaggregated per-timestep loss.
+
+        Calls each active loss function with ``do_average=False``; custom
+        callables must therefore support that keyword argument.
 
         Args:
-            hmm (AbstractHMM): HMM instance used to generate evaluation data.
-            loss (str, optional): string describing the loss function to use. Currently accepted values are
-                "emissions", "kl" (default), and "hilbert". See :class:`LossType` for details.
-            batch_size (int, optional): Number of independent trajectories to sample. Defaults to 100.
-            time_steps (int, optional): Length of each sampled trajectory. Defaults to 1000.
-            x0 (ArrayLike, optional): Initial hidden state of shape (latent_dim,). Defaults to zeros.
+            inputs (ArrayLike): Input vectors of shape (B, T, emission_dim).
+            desired_output (ArrayLike, optional): Target output distributions of
+                shape (B, T, emission_dim). Required when ``output_loss`` is set.
+            desired_latent (ArrayLike, optional): Target latent states. Required
+                when ``latent_loss`` is set.
+            output_loss (str | Callable, optional): Output loss function.
+            latent_loss (str | Callable, optional): Latent loss function.
+            x0 (ArrayLike, optional): Initial hidden state. Defaults to zeros.
 
         Returns:
-            jax.Array: Per-timestep loss values of shape (B, T) or (B, T-1) depending on loss type.
+            jax.Array: Per-timestep total loss of shape (B, T).
         """
-        loss = LossType(loss)
-        loss_fn, needs_posterior = LOSS_MAP[loss]
-        _, emissions = hmm.sample(batch_size, time_steps)
-        emissions = jnp.asarray(emissions, dtype=jnp.int32)
+        if output_loss is None and latent_loss is None:
+            raise ValueError("At least one of output_loss or latent_loss must be specified.")
+
+        output_loss_fn = _resolve_loss(output_loss)
+        latent_loss_fn = _resolve_loss(latent_loss)
+
         x0_vec = self._resolve_x0(x0)
-        if needs_posterior:
-            _, next_token_posterior = hmm.compute_posterior(emissions)
-        else:
-            next_token_posterior = None
-        return loss_fn(
-            self._batched_forward, self._parameters, emissions, next_token_posterior, x0_vec, do_average=False
-        )
+        Y, X = self._batched_forward(self._parameters, jnp.asarray(inputs), x0_vec)
+
+        total = None
+        if output_loss_fn is not None:
+            out = output_loss_fn(Y, jnp.asarray(desired_output), do_average=False)
+            total = out
+        if latent_loss_fn is not None:
+            out = latent_loss_fn(X, jnp.asarray(desired_latent), do_average=False)
+            total = out if total is None else total + out
+
+        return total
 
     # ------------------------------------------------------------------
     # Training
@@ -301,79 +357,94 @@ class AbstractRNN(metaclass=ABCMeta):
 
     def train(
         self,
-        hmm: GenericHMM,
+        inputs: ArrayLike,
         *,
-        loss: str = LossType.KL,
-        batch_size: int = 100,
-        time_steps: int = 1000,
-        num_epochs: int = 1,
+        desired_output: ArrayLike | None = None,
+        desired_latent: ArrayLike | None = None,
+        output_loss: str | Callable | None = None,
+        latent_loss: str | Callable | None = None,
         learning_rate: float = 2e-2,
         optimization_steps: int = 2000,
         print_every: int = 100,
         x0: ArrayLike | None = None,
-    ) -> ArrayLike:
-        """Batch trains the RNN using sequences sampled from a passed in :class:`AbstractHMM` instance.
+    ) -> np.ndarray:
+        """Train the RNN on a fixed batch of inputs.
 
-        Handles data sampling, optimizer construction, and gradient updates. Only unfrozen weights are trained.
+        Only unfrozen weights are updated.  Data sampling and epoch looping are
+        the caller's responsibility; see :func:`rnn_filtering.train_on_hmm` for
+        a batteries-included wrapper when training on HMM data.
 
         Args:
-            hmm (AbstractHMM): HMM instance used to generate training data.
-            loss (str, optional): string describing the loss function to use. Currently accepted values are
-                "emissions", "kl" (default), and "hilbert". See :class:`LossType` for details.
-            batch_size (int): Number of independent trajectories per epoch.
-            time_steps (int): Length of each sampled trajectory.
-            num_epochs (int): Number of data-resampling epochs.
-            learning_rate (float): Adam learning rate.
-            optimization_steps (int): Gradient steps per epoch.
-            print_every (int): Print loss every this many steps.
-            x0 (array-like, optional): Initial hidden state. Defaults to zeros.
+            inputs (ArrayLike): Input vectors of shape (B, T, emission_dim).
+            desired_output (ArrayLike, optional): Target output distributions of
+                shape (B, T, emission_dim). Required when ``output_loss`` is set.
+            desired_latent (ArrayLike, optional): Target latent states. Required
+                when ``latent_loss`` is set.
+            output_loss (str | Callable, optional): Loss applied to the RNN
+                output.  A :class:`LossType` string or any callable with
+                signature ``(result, desired) -> scalar``.  Keyword arguments
+                ``clip`` and ``do_average`` are optional.
+            latent_loss (str | Callable, optional): Loss applied to the RNN
+                latent state.  Same callable contract as ``output_loss``.
+            learning_rate (float): Adam learning rate. Defaults to 2e-2.
+            optimization_steps (int): Number of gradient steps. Defaults to 2000.
+            print_every (int): Print loss every this many steps (0 = silent).
+                Defaults to 100.
+            x0 (ArrayLike, optional): Initial hidden state. Defaults to zeros.
 
         Returns:
-            loss_history (numpy.ndarray): Loss values of shape (optimization_steps, num_epochs).
+            np.ndarray: Loss history of shape (optimization_steps,).
         """
-        loss_history = np.zeros((optimization_steps, num_epochs))
+        if output_loss is None and latent_loss is None:
+            raise ValueError("At least one of output_loss or latent_loss must be specified.")
+
+        output_loss_fn = _resolve_loss(output_loss)
+        latent_loss_fn = _resolve_loss(latent_loss)
+
+        inputs_arr = jnp.asarray(inputs)
         x0_vec = self._resolve_x0(x0)
-        loss = LossType(loss)
-        loss_fn, needs_posterior = LOSS_MAP[loss]
-        batched_forward = self._batched_forward
 
-        # partition into differentiable and static parts
+        # Dummy arrays stand in for unused desired values; they are never
+        # accessed inside compute_loss because the if-branches are resolved at
+        # JAX trace time (Python-level booleans).
+        _dummy = jnp.zeros(0)
+        desired_out = _dummy if desired_output is None else jnp.asarray(desired_output)
+        desired_lat = _dummy if desired_latent is None else jnp.asarray(desired_latent)
+
         diff_params, static_params = eqx.partition(self._parameters, self._is_trainable, is_leaf=self._is_leaf)
-
         optimizer = optax.adam(learning_rate)
         opt_state = optimizer.init(diff_params)
 
+        batched_forward = self._batched_forward
+        is_leaf = self._is_leaf
+
         @jax.jit
-        def update_step(the_differentiable_params, the_static_params, the_state, the_emissions, the_targets):
-            def compute_loss(diff, static):
-                full_params = eqx.combine(diff, static, is_leaf=self._is_leaf)
-                return loss_fn(batched_forward, full_params, the_emissions, the_targets, x0_vec)
+        def update_step(diff, static, state, batch_inputs, d_out, d_lat):
+            def compute_loss(d, s):
+                full_params = eqx.combine(d, s, is_leaf=is_leaf)
+                Y, X = batched_forward(full_params, batch_inputs, x0_vec)
+                loss = jnp.zeros(())
+                if output_loss_fn is not None:
+                    loss = loss + output_loss_fn(Y, d_out)
+                if latent_loss_fn is not None:
+                    loss = loss + latent_loss_fn(X, d_lat)
+                return loss
 
-            loss_val, grads = jax.value_and_grad(compute_loss)(the_differentiable_params, the_static_params)
-            updates, next_state = optimizer.update(grads, the_state, the_differentiable_params)
-            next_diff_params = optax.apply_updates(the_differentiable_params, updates)
+            loss_val, grads = jax.value_and_grad(compute_loss)(diff, static)
+            updates, next_state = optimizer.update(grads, state, diff)
+            next_diff = optax.apply_updates(diff, updates)
+            return next_diff, next_state, loss_val
 
-            return next_diff_params, next_state, loss_val
-
-        # training loop
+        loss_history = np.zeros(optimization_steps)
         current_diff = diff_params
-        for epoch in range(num_epochs):
-            _, emissions = hmm.sample(batch_size, time_steps)
-            emissions = jnp.asarray(emissions, dtype=jnp.int32)
-            if needs_posterior:
-                _, next_token_posterior = hmm.compute_posterior(emissions)
-            else:
-                next_token_posterior = None
 
-            for s in range(1, optimization_steps + 1):
-                current_diff, opt_state, current_loss = update_step(
-                    current_diff, static_params, opt_state, emissions, next_token_posterior
-                )
-
-                loss_history[s - 1, epoch] = current_loss
-
-                if s % print_every == 0:
-                    print(f"epoch {epoch}, step {s}: loss={float(current_loss):.12e}")
+        for s in range(1, optimization_steps + 1):
+            current_diff, opt_state, current_loss = update_step(
+                current_diff, static_params, opt_state, inputs_arr, desired_out, desired_lat
+            )
+            loss_history[s - 1] = float(current_loss)
+            if print_every > 0 and s % print_every == 0:
+                print(f"step {s}: loss={float(current_loss):.12e}")
 
         self._parameters = eqx.combine(current_diff, static_params, is_leaf=self._is_leaf)
         return loss_history
@@ -385,13 +456,13 @@ class AbstractRNN(metaclass=ABCMeta):
     @classmethod
     @partial(jax.jit, static_argnums=0)
     def _batched_forward(
-        cls, params: dict[str, Parameter], emissions: jax.Array, x0: jax.Array
+        cls, params: dict[str, Parameter], inputs: jax.Array, x0: jax.Array
     ) -> tuple[jax.Array, jax.Array]:
         """JIT-compiled batched forward pass via ``jax.vmap`` over ``jax.lax.scan``.
 
         Args:
             params (dict[str, Parameter]): Current RNN instance parameters.
-            emissions (jax.Array): Emission indices of shape (B, T), dtype int32.
+            inputs (jax.Array): Input vectors of shape (B, T, emission_dim).
             x0 (jax.Array): Initial hidden state of shape (latent_dim,).
 
         Returns:
@@ -400,15 +471,15 @@ class AbstractRNN(metaclass=ABCMeta):
         """
         w = {name: parameter.get_value() for name, parameter in params.items()}
 
-        def step(x_prev, emission_t):
-            x_t, y_t = cls.integrate(x_prev=x_prev, emission_t=emission_t, **w)
+        def step(x_prev, input_t):
+            x_t, y_t = cls.integrate(x_prev=x_prev, input_t=input_t, **w)
             return x_t, (y_t, x_t)
 
-        def scan_single(emissions_single):
-            _, (Y, X) = jax.lax.scan(step, x0, emissions_single)
+        def scan_single(inputs_single):
+            _, (Y, X) = jax.lax.scan(step, x0, inputs_single)
             return Y, X
 
-        return jax.vmap(scan_single)(emissions)
+        return jax.vmap(scan_single)(inputs)
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -438,7 +509,7 @@ class AbstractRNN(metaclass=ABCMeta):
 
 
 class ExactRNN(AbstractRNN):
-    """Exact forward-filter dynamics: ``x_t = log(A exp(x_{t-1})) + B[:, y_t]``.
+    """Exact forward-filter dynamics: ``x_t = log(A exp(x_{t-1})) + B input_t``.
 
     Raw weights ``A`` and ``C`` are stored in unconstrained log-space and
     softmax-normalised to column-stochastic matrices before the scan.
@@ -454,25 +525,25 @@ class ExactRNN(AbstractRNN):
 
     @staticmethod
     def integrate(
-        A: jax.Array, B: jax.Array, C: jax.Array, x_prev: jax.Array, emission_t: jax.Array
+        A: jax.Array, B: jax.Array, C: jax.Array, x_prev: jax.Array, input_t: jax.Array
     ) -> tuple[jax.Array, jax.Array]:
         """Exact nonlinear forward-filter recurrence.
 
-        Computes ``x_t = log(A exp(x_{t-1})) + B[:, y_t]`` (normalised in
+        Computes ``x_t = log(A exp(x_{t-1})) + B input_t`` (normalised in
         log-space) and reads out via ``y_t = C softmax(x_t)``.
 
         Args:
-            A (jax.Array): Column-stochastic transfer matrix of shape ( latent_dim,  latent_dim).
-            B (jax.Array): Log-emission matrix of shape ( latent_dim, emission_dim).
-            C (jax.Array): Column-stochastic readout matrix of shape (emission_dim,  latent_dim).
-            x_prev (jax.Array): Previous log-posterior of shape ( latent_dim,).
-            emission_t (jax.Array): Current emission index (scalar int32).
+            A (jax.Array): Column-stochastic transfer matrix of shape (latent_dim, latent_dim).
+            B (jax.Array): Input projection matrix of shape (latent_dim, emission_dim).
+            C (jax.Array): Column-stochastic readout matrix of shape (emission_dim, latent_dim).
+            x_prev (jax.Array): Previous log-posterior of shape (latent_dim,).
+            input_t (jax.Array): Current input vector of shape (emission_dim,).
 
         Returns:
-            x_t (jax.Array): Updated log-posterior of shape ( latent_dim,).
-            y_t (jax.Array): Predicted next-emission distribution of shape (emission_dim,).
+            x_t (jax.Array): Updated log-posterior of shape (latent_dim,).
+            y_t (jax.Array): Predicted output distribution of shape (emission_dim,).
         """
-        x_t = jnp.log(A @ jnp.exp(x_prev)) + B[:, emission_t]
+        x_t = jnp.log(A @ jnp.exp(x_prev)) + B @ input_t
         x_t = x_t - logsumexp(x_t)
         y_t = C @ jax.nn.softmax(x_t)
         return x_t, y_t
@@ -505,7 +576,7 @@ class ExactRNN(AbstractRNN):
 class ModelA(AbstractRNN):
     """Linear RNN with stable latent dynamics and stochastic readout.
 
-    Recurrence: ``x_t = A x_{t-1} + B[:, y_t]``;
+    Recurrence: ``x_t = A x_{t-1} + B input_t``;
     readout: ``p_t = C softmax(x_t)``.
 
     ``A`` is parameterised via the Cayley transform to guarantee spectral
@@ -522,25 +593,25 @@ class ModelA(AbstractRNN):
 
     @staticmethod
     def integrate(
-        A: jax.Array, B: jax.Array, C: jax.Array, x_prev: jax.Array, emission_t: jax.Array
+        A: jax.Array, B: jax.Array, C: jax.Array, x_prev: jax.Array, input_t: jax.Array
     ) -> tuple[jax.Array, jax.Array]:
         """Linear recurrence with stochastic readout.
 
-        Computes ``x_t = A x_{t-1} + B[:, y_t]`` and reads out via
+        Computes ``x_t = A x_{t-1} + B input_t`` and reads out via
         ``y_t = C softmax(x_t)``.
 
         Args:
-            A (jax.Array): Stable dynamics matrix of shape ( latent_dim,  latent_dim).
-            B (jax.Array): Input embedding matrix of shape ( latent_dim, emission_dim).
-            C (jax.Array): Column-stochastic readout matrix of shape (emission_dim,  latent_dim).
-            x_prev (jax.Array): Previous hidden state of shape ( latent_dim,).
-            emission_t (jax.Array): Current emission index (scalar int32).
+            A (jax.Array): Stable dynamics matrix of shape (latent_dim, latent_dim).
+            B (jax.Array): Input projection matrix of shape (latent_dim, emission_dim).
+            C (jax.Array): Column-stochastic readout matrix of shape (emission_dim, latent_dim).
+            x_prev (jax.Array): Previous hidden state of shape (latent_dim,).
+            input_t (jax.Array): Current input vector of shape (emission_dim,).
 
         Returns:
-            x_t (jax.Array): Updated hidden state of shape ( latent_dim,).
-            y_t (jax.Array): Predicted next-emission distribution of shape (emission_dim,).
+            x_t (jax.Array): Updated hidden state of shape (latent_dim,).
+            y_t (jax.Array): Predicted output distribution of shape (emission_dim,).
         """
-        x_t = A @ x_prev + B[:, emission_t]
+        x_t = A @ x_prev + B @ input_t
         y_t = C @ jax.nn.softmax(x_t)
         return x_t, y_t
 
@@ -577,7 +648,7 @@ class ModelA(AbstractRNN):
 class ModelB(AbstractRNN):
     """Linear RNN with stable latent dynamics and affine softmax readout.
 
-    Recurrence: ``x_t = A x_{t-1} + B[:, y_t]``;
+    Recurrence: ``x_t = A x_{t-1} + B input_t``;
     readout: ``p_t = softmax(C x_t + d)``.
 
     ``A`` is Cayley-stable. The output bias ``d`` allows a richer readout mapping
@@ -595,25 +666,25 @@ class ModelB(AbstractRNN):
 
     @staticmethod
     def integrate(
-        A: jax.Array, B: jax.Array, C: jax.Array, d: jax.Array, x_prev: jax.Array, emission_t: jax.Array
+        A: jax.Array, B: jax.Array, C: jax.Array, d: jax.Array, x_prev: jax.Array, input_t: jax.Array
     ) -> tuple[jax.Array, jax.Array]:
         """Linear recurrence with affine softmax readout.
 
-        Computes ``x_t = A x_{t-1} + B[:, y_t]`` and reads out via
+        Computes ``x_t = A x_{t-1} + B input_t`` and reads out via
         ``y_t = softmax(C x_t + d)``.
 
         Args:
-            A (jax.Array): Stable dynamics matrix of shape ( latent_dim,  latent_dim).
-            B (jax.Array): Input embedding matrix of shape ( latent_dim, emission_dim).
-            C (jax.Array): Readout weight matrix of shape (emission_dim,  latent_dim).
+            A (jax.Array): Stable dynamics matrix of shape (latent_dim, latent_dim).
+            B (jax.Array): Input projection matrix of shape (latent_dim, emission_dim).
+            C (jax.Array): Readout weight matrix of shape (emission_dim, latent_dim).
             d (jax.Array): Readout bias vector of shape (emission_dim,).
-            x_prev (jax.Array): Previous hidden state of shape ( latent_dim,).
-            emission_t (jax.Array): Current emission index (scalar int32).
+            x_prev (jax.Array): Previous hidden state of shape (latent_dim,).
+            input_t (jax.Array): Current input vector of shape (emission_dim,).
 
         Returns:
-            x_t (jax.Array): Updated hidden state of shape ( latent_dim,).
-            y_t (jax.Array): Predicted next-emission distribution of shape (emission_dim,).
+            x_t (jax.Array): Updated hidden state of shape (latent_dim,).
+            y_t (jax.Array): Predicted output distribution of shape (emission_dim,).
         """
-        x_t = A @ x_prev + B[:, emission_t]
+        x_t = A @ x_prev + B @ input_t
         y_t = jax.nn.softmax(C @ x_t + d)
         return x_t, y_t

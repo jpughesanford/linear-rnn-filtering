@@ -6,6 +6,7 @@ import pytest
 from rnn_filtering.hmm import NodeEmittingHMM, HMMFactory
 from rnn_filtering.rnn import AbstractRNN, Parameter, register_parameter_type
 from rnn_filtering.rnn.parameters import NonnegativeParameter, StableParameter, StochasticParameter
+from rnn_filtering.training import train_on_hmm
 import equinox as eqx
 
 @pytest.fixture
@@ -24,13 +25,13 @@ class TestConstraints:
                 }
 
             @staticmethod
-            def integrate(A, B, C, x_prev, emission_t):
-                x_t = A @ x_prev + B[:, emission_t]
+            def integrate(A, B, C, x_prev, input_t):
+                x_t = A @ x_prev + B @ input_t
                 y_t = jax.nn.softmax(C @ x_t)
                 return x_t, y_t
 
         rnn = StochasticModel(casino.latent_dim, casino.emission_dim, seed=0)
-        rnn.train(casino, batch_size=10, time_steps=50, optimization_steps=50, print_every=999)
+        train_on_hmm(rnn, casino, batch_size=10, time_steps=50, optimization_steps=50, print_every=0)
         A = np.array(rnn.get_parameter_values({"A"})["A"])
         assert np.allclose(A.sum(axis=0), 1.0, atol=1e-6)
         assert np.all(A >= 0)
@@ -46,13 +47,13 @@ class TestConstraints:
                 }
 
             @staticmethod
-            def integrate(A, B, C, x_prev, emission_t):
-                x_t = A @ x_prev + B[:, emission_t]
+            def integrate(A, B, C, x_prev, input_t):
+                x_t = A @ x_prev + B @ input_t
                 y_t = jax.nn.softmax(C @ x_t)
                 return x_t, y_t
 
         rnn = StableModel(casino.latent_dim, casino.emission_dim, seed=0)
-        rnn.train(casino, batch_size=10, time_steps=50, optimization_steps=50, print_every=999)
+        train_on_hmm(rnn, casino, batch_size=10, time_steps=50, optimization_steps=50, print_every=0)
         A = np.array(rnn.get_parameter_values({"A"})["A"])
         assert np.all(np.abs(np.linalg.eigvals(A)) <= 1 + 1e-5)
 
@@ -67,13 +68,13 @@ class TestConstraints:
                 }
 
             @staticmethod
-            def integrate(A, B, C, x_prev, emission_t):
-                x_t = A @ x_prev + B[:, emission_t]
+            def integrate(A, B, C, x_prev, input_t):
+                x_t = A @ x_prev + B @ input_t
                 y_t = jax.nn.softmax(C @ x_t)
                 return x_t, y_t
 
         rnn = NonnegativeModel(casino.latent_dim, casino.emission_dim, seed=0)
-        rnn.train(casino, batch_size=10, time_steps=50, optimization_steps=50, print_every=999)
+        train_on_hmm(rnn, casino, batch_size=10, time_steps=50, optimization_steps=50, print_every=0)
         A = np.array(rnn.get_parameter_values({"A"})["A"])
         assert np.all(A >= 0)
 
@@ -98,14 +99,16 @@ class TestRegisterParameterType:
                 }
 
             @staticmethod
-            def integrate(A, B, C, x_prev, emission_t):
-                x_t = A @ x_prev + B[:, emission_t]
+            def integrate(A, B, C, x_prev, input_t):
+                x_t = A @ x_prev + B @ input_t
                 y_t = jax.nn.softmax(C @ x_t)
                 return x_t, y_t
 
         rnn = AbsModel(casino.latent_dim, casino.emission_dim, seed=0)
         assert isinstance(rnn._parameters["A"], AbsParameter)
-        Y, X = rnn.predict(casino.sample(batch_size=2, time_steps=10)[1])
+        _, emissions = casino.sample(batch_size=2, time_steps=10)
+        inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
+        Y, X = rnn.predict(inputs)
         assert Y.shape == (2, 10, casino.emission_dim)
 
     def test_register_rejects_non_parameter_subclass(self):
@@ -141,8 +144,8 @@ class TestRegisterParameterType:
                 }
 
             @staticmethod
-            def integrate(A, B, x_prev, emission_t):
-                x_t = A @ x_prev + B[:, emission_t]
+            def integrate(A, B, x_prev, input_t):
+                x_t = A @ x_prev + B @ input_t
                 y_t = x_t
                 return x_t, y_t
 

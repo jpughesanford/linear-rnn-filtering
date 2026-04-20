@@ -21,11 +21,13 @@ class LossType(CheckedType):
     """Training / evaluation objective."""
 
     EMISSIONS = "emissions"
-    """Next-token negative log-likelihood."""
+    """Alias for one-hot KL (NLL). Recognised by train_on_hmm; not in LOSS_MAP."""
     KL = "kl"
-    """KL divergence to ground-truth posterior."""
+    """KL divergence KL(desired ‖ result)."""
     HILBERT = "hilbert"
-    """Hilbert projective distance to posterior."""
+    """Hilbert projective distance."""
+    ONE_NORM = "one_norm"
+    """L1 norm between distributions."""
 
 
 class ConstraintType(CheckedType):

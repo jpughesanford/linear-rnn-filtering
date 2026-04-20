@@ -7,21 +7,23 @@ perform next token prediction on sequences sampled from Hidden Markov Models (HM
 
 For more information on this repository, please consult the :doc:`README`.
 
-The repository is structured into three submodules: rnn, hmm, and types. Types holds
-general enums, like those used to define supported loss-functions and supported constraints
-on training variables.
+The repository is structured into two primary submodules plus a top-level training helper:
 
-The hmm modules contains classes:
+The **hmm** module contains:
 
-- **DiscreteHMM**: Simulate a discrete HMM, sample hidden/emission trajectories in batch, and compute the exact Bayesian next-token posterior via forward filtering.
-- **HMMFactory**: A factory pattern class, used to quickly instantiate common HMM types
+- **AbstractHMM**: Abstract base class for discrete HMMs with batch sampling and exact forward filtering.
+- **NodeEmittingHMM**: HMM where emissions depend only on the current latent state.
+- **EdgeEmittingHMM**: HMM where emissions depend on the current and previous latent state.
+- **HMMFactory**: A factory class for quickly instantiating common HMM types.
 
-The rnn module contains classes:
+The **rnn** module contains:
 
-- **AbstractRNN**: Abstract base class to be subclassed when implementing arbitrary, potentially nonlinear, single-layer RNNs.
+- **AbstractRNN**: Abstract base class for arbitrary, potentially nonlinear, single-layer RNNs over vector-valued inputs.
 - **ExactRNN**: The exact nonlinear forward-filter implemented as an RNN.
-- **ModelA**: A stable linear RNN, with a forward-filter informed nonlinear readout. Supports creating A* models (i.e., Jacobian-linearized initialization) using :meth:`initialize_Astar`, see manuscript for more details on such models.
-- **ModelB**: A stable linear RNN, with an affine softmax readout (`output = softmax(A*latent_state + b)`).
+- **ModelA**: A stable linear RNN with a stochastic linear readout. Supports linearized initialization via :meth:`initialize_astar`.
+- **ModelB**: A stable linear RNN with an affine softmax readout.
+
+The top-level **train_on_hmm** function couples the HMM-agnostic :meth:`AbstractRNN.train` to an HMM, handling sampling, one-hot embedding, and posterior computation.
 
 API Reference
 =============
@@ -33,7 +35,9 @@ rnn_filtering.hmm
    :toctree: _autosummary/hmm
    :caption: Hidden Markov Models
 
-   ~rnn_filtering.hmm.DiscreteHMM
+   ~rnn_filtering.hmm.AbstractHMM
+   ~rnn_filtering.hmm.NodeEmittingHMM
+   ~rnn_filtering.hmm.EdgeEmittingHMM
    ~rnn_filtering.hmm.HMMFactory
 
 
@@ -48,14 +52,15 @@ rnn_filtering.rnn
    ~rnn_filtering.rnn.ExactRNN
    ~rnn_filtering.rnn.ModelA
    ~rnn_filtering.rnn.ModelB
+   ~rnn_filtering.rnn.LossType
+   ~rnn_filtering.rnn.ConstraintType
 
 
-rnn_filtering.types
+rnn_filtering
 --------------------------
 
 .. autosummary::
-   :toctree: _autosummary/types
-   :caption: Enums and type definitions
+   :toctree: _autosummary
+   :caption: Training utilities
 
-   ~rnn_filtering.types.LossType
-   ~rnn_filtering.types.ConstraintType
+   ~rnn_filtering.train_on_hmm
