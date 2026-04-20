@@ -63,7 +63,7 @@ loss = train_on_hmm(rnn, hmm, output_loss="kl", batch_size=100, time_steps=500, 
 
 # Embed emissions as one-hot vectors and run the RNN.
 inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), hmm.emission_dim)
-output_timeseries, latent_timeseries = rnn.predict(inputs)
+output_timeseries, latent_timeseries = rnn.respond(inputs)
 
 # Implement an exact RNN. This is an RNN with nonlinear latent dynamics and a nonlinear readout function.
 # See manuscript for more details
@@ -75,7 +75,7 @@ exact.initialize_weights(hmm)
 
 # Run the RNN; its output will equal the true next token posterior.
 x0 = np.log(hmm.latent_stationary_density)
-exact_output_timeseries, _ = exact.predict(inputs, x0=x0)
+exact_output_timeseries, _ = exact.respond(inputs, x0=x0)
 ```
 
 ## HMM classes

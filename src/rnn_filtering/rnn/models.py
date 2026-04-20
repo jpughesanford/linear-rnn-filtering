@@ -1,12 +1,4 @@
-"""RNN architectures for sequence modelling over discrete inputs.
-
-Each model takes a batch of vector-valued input sequences and produces a
-predicted output distribution at every time step.  Inputs may be one-hot
-embeddings of discrete symbols, soft distributions, or any other fixed-length
-vector representation.
-
-HMM-specific helpers (data sampling, posterior computation, one-hot embedding
-of emission symbols) live in :mod:`rnn_filtering.training`, not here.
+"""RNN architectures for sequence modelling.
 """
 
 from __future__ import annotations
@@ -286,7 +278,7 @@ class AbstractRNN(metaclass=ABCMeta):
     # Inference
     # ------------------------------------------------------------------
 
-    def predict(self, inputs: ArrayLike, x0: ArrayLike | None = None) -> tuple[jax.Array, jax.Array]:
+    def respond(self, inputs: ArrayLike, x0: ArrayLike | None = None) -> tuple[jax.Array, jax.Array]:
         """Run the RNN on a batch of input sequences.
 
         Args:
@@ -297,7 +289,7 @@ class AbstractRNN(metaclass=ABCMeta):
                 Defaults to zeros.
 
         Returns:
-            Y (jax.Array): Output distributions of shape (B, T, emission_dim).
+            Y (jax.Array): Output states of shape (B, T, emission_dim).
             X (jax.Array): Hidden states of shape (B, T, latent_dim).
         """
         inputs = jnp.asarray(inputs)
@@ -466,7 +458,7 @@ class AbstractRNN(metaclass=ABCMeta):
             x0 (jax.Array): Initial hidden state of shape (latent_dim,).
 
         Returns:
-            Y (jax.Array): Predicted distributions of shape (B, T, emission_dim).
+            Y (jax.Array): Output states of shape (B, T, emission_dim).
             X (jax.Array): Hidden states of shape (B, T, latent_dim).
         """
         w = {name: parameter.get_value() for name, parameter in params.items()}

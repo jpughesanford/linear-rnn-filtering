@@ -110,7 +110,7 @@ class TestRegisterParameterType:
         assert isinstance(rnn._parameters["A"], AbsParameter)
         _, emissions = casino.sample(batch_size=2, time_steps=10)
         inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
-        Y, X = rnn.predict(inputs)
+        Y, X = rnn.respond(inputs)
         assert Y.shape == (2, 10, casino.emission_dim)
 
     def test_register_rejects_non_parameter_subclass(self):

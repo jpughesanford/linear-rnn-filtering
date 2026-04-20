@@ -88,24 +88,24 @@ class TestConstruction:
 
 
 class TestPredict:
-    def test_predict(self, casino):
+    def test_respond(self, casino):
         rnn = ExactRNN(casino.latent_dim, casino.emission_dim, seed=0)
         rnn.initialize_weights(casino)
         _, emissions = casino.sample(batch_size=3, time_steps=20)
         _, posterior = casino.compute_posterior(emissions)
         x0 = np.log(casino.latent_stationary_density)
         inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
-        Y, X = rnn.predict(inputs, x0=x0)
+        Y, X = rnn.respond(inputs, x0=x0)
         assert Y.shape == (3, 20, casino.emission_dim)
         assert X.shape == (3, 20, casino.latent_dim)
         assert np.allclose(np.array(Y), posterior, atol=1e-6)
         assert np.allclose(jnp.sum(Y, axis=-1), 1.0, atol=1e-5)
 
-    def test_model_b_predict(self, casino):
+    def test_model_b_respond(self, casino):
         rnn = ModelB(casino.latent_dim, casino.emission_dim, seed=0)
         _, emissions = casino.sample(batch_size=3, time_steps=20)
         inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
-        Y, X = rnn.predict(inputs)
+        Y, X = rnn.respond(inputs)
         assert Y.shape == (3, 20, casino.emission_dim)
         assert X.shape == (3, 20, casino.latent_dim)
         assert np.allclose(jnp.sum(Y, axis=-1), 1.0, atol=1e-5)
@@ -117,7 +117,7 @@ class TestInitializeFromHMM:
         rnn.initialize_astar(casino)
         _, emissions = casino.sample(batch_size=3, time_steps=50)
         inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
-        Y, _ = rnn.predict(inputs)
+        Y, _ = rnn.respond(inputs)
         assert Y.shape == (3, 50, casino.emission_dim)
         assert np.allclose(jnp.sum(Y, axis=-1), 1.0, atol=1e-5)
 
@@ -126,7 +126,7 @@ class TestInitializeFromHMM:
         rnn.initialize_weights(casino)
         _, emissions = casino.sample(batch_size=3, time_steps=50)
         inputs = jax.nn.one_hot(jnp.asarray(emissions, jnp.int32), casino.emission_dim)
-        Y, _ = rnn.predict(inputs)
+        Y, _ = rnn.respond(inputs)
         assert Y.shape == (3, 50, casino.emission_dim)
         assert np.allclose(jnp.sum(Y, axis=-1), 1.0, atol=1e-5)
 
